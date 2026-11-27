@@ -1,0 +1,130 @@
+import json
+import re
+from pathlib import Path
+
+from vg import rules
+from vg.ills import canon, find
+from vg.timeline import words_of
+
+REQ = ("key", "ill", "title", "tag", "text", "tts_text")
+TXT = ("text", "tts_text", "title", "tag")
+KEY = re.compile(r"^[a-z][a-z0-9_]*$")
+LAT = re.compile(r"[A-Za-z]")
+DIG = re.compile(r"\d")
+
+
+def load_doc(path):
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"не найден: {p}")
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{p.name}: невалидный JSON: {e}")
+
+
+def scenes_of(doc):
+    out = []
+    for s in doc["scenes"]:
+        s = dict(s)
+        s["color"] = tuple(int(c) for c in s.get("color", [124, 92, 255]))
+        s.setdefault("ill_params", {})
+        out.append(s)
+    return out
+
+def limits_of(cfg):
+    lim = (cfg or {}).get("limits", {})
+    return dict(
+        scenes=tuple(lim.get("scenes", rules.SCENES)),
+        title=lim.get("title_max", rules.TITLE_MAX),
+        tag=lim.get("tag_max", rules.TAG_MAX),
+        words=tuple(lim.get("words", rules.WORDS)),
+    )
+
+
+def prompt_vars(lim):
+    return {
+        "SCENES_MIN": lim["scenes"][0], "SCENES_MAX": lim["scenes"][1],
+        "MID_MIN": lim["scenes"][0] - 2, "MID_MAX": lim["scenes"][1] - 2,
+        "TITLE_MAX": lim["title"], "TAG_MAX": lim["tag"],
+        "WORDS_MIN": lim["words"][0], "WORDS_MAX": lim["words"][1],
+    }
+
+def check_doc(doc, lim=None):
+    lim = lim or limits_of(None)
+    err, warn = [], []
+    scenes = doc.get("scenes") if isinstance(doc, dict) else None
+    if not isinstance(scenes, list) or not scenes:
+        return ["scenes: нужен непустой список"], warn
+    lo, hi = lim["scenes"]
+    if not lo <= len(scenes) <= hi:
+        err.append(f"сцен {len(scenes)}, нужно {lo}-{hi}")
+    seen = set()
+    ills = []
+    stage_ids = {}
+    for i, s in enumerate(scenes):
+        if not isinstance(s, dict):
+            err.append(f"scene[{i}]: должен быть объектом")
+            continue
+        k = s.get("key", "?")
+        w = f"сцена {i} ({k})"
+        miss = [f for f in REQ if not isinstance(s.get(f), str) or not s.get(f).strip()]
+        if miss:
+            err.append(f"{w}: нет или пусто {miss}")
+            continue
+        if not KEY.match(k):
+            err.append(f"{w}: key должен быть латиницей в snake_case")
+        if k in seen:
+            err.append(f"{w}: повтор key")
+        seen.add(k)
+        ill = canon(s["ill"])
+        ills.append(ill)
+        r = find(ill)
+        if r is None:
+            err.append(f"{w}: неизвестный ill '{s['ill']}'")
+        elif r["check"]:
+            try:
+                r["check"](s.get("ill_params") or {})
+            except (ValueError, KeyError, TypeError, IndexError, AttributeError) as e:
+                err.append(f"{w}: ill_params: {e}")
+        if ill == "stage":
+            from stage import check_params as stage_check
+            sp = s.get("ill_params") or {}
+            ws, _ = words_of(s["text"])
+            known = stage_ids if sp.get("continue") else {}
+            for e in stage_check(sp, ws, known):
+                err.append(f"{w}: stage: {e}")
+            stage_ids = dict(known)
+            stage_ids.update({o["id"]: o["type"] for o in sp.get("objects", [])
+                              if isinstance(o, dict) and "id" in o and "type" in o})
+        else:
+            stage_ids = {}
+        c = s.get("color", [124, 92, 255])
+        if not (isinstance(c, list) and len(c) == 3 and all(isinstance(v, int) and 0 <= v <= 255 for v in c)):
+            err.append(f"{w}: color должен быть [r,g,b] 0-255")
+        for f in TXT:
+            if "ё" in s[f].lower():
+                err.append(f"{w}: буква ё в поле {f}")
+        if len(s["title"]) > lim["title"]:
+            err.append(f"{w}: title {len(s['title'])} символов, максимум {lim['title']}")
+        if s["title"] != s["title"].upper():
+            err.append(f"{w}: title должен быть капсом")
+        if len(s["tag"]) > lim["tag"]:
+            err.append(f"{w}: tag {len(s['tag'])} символов, максимум {lim['tag']}")
+        n = len(s["text"].split())
+        if n > lim["words"][1]:
+            err.append(f"{w}: в text {n} слов, максимум {lim['words'][1]}")
+        if n < lim["words"][0] and ill not in rules.EXEMPT:
+            warn.append(f"{w}: в text {n} слов, рекомендуется от {lim['words'][0]}")
+        if LAT.search(s["tts_text"]) or DIG.search(s["tts_text"]):
+            warn.append(f"{w}: в tts_text латиница или цифры, Silero прочитает их плохо")
+    if ills:
+        if ills[0] != "intro" or ills.count("intro") != 1:
+            err.append("intro должен быть ровно один и стоять первым")
+        if ills[-1] != "outro" or ills.count("outro") != 1:
+            err.append("outro должен быть ровно один и стоять последним")
+    cols = [tuple(s.get("color", ())) for s in scenes if isinstance(s, dict)]
+    for i in range(len(cols) - 1):
+        if cols[i] and cols[i] == cols[i + 1]:
+            warn.append(f"соседние сцены {i} и {i + 1} одного цвета")
+    return err, warn

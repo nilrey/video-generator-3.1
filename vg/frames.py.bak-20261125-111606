@@ -1,0 +1,110 @@
+import numpy as np
+from PIL import Image, ImageDraw
+
+from vg import caption
+from vg.fonts import font
+from vg.gfx import XB, SB, Cv, ease_out
+from vg.ills import find
+from stage import Stage
+
+
+def make_bg(color, st):
+    w, h = st.video.w, st.video.h
+    cl = st.col
+    yy = np.linspace(0, 1, h, dtype=np.float32)[:, None, None]
+    top, bot = np.array(cl.bg_top, np.float32), np.array(cl.bg_bot, np.float32)
+    base = np.broadcast_to(top * (1 - yy) + bot * yy, (h, w, 3)).copy()
+    Y, X = np.mgrid[0:h, 0:w].astype(np.float32)
+    g = np.clip(1 - np.sqrt(((X - 540) / 620) ** 2 + ((Y - 830) / 560) ** 2), 0, 1) ** 2
+    base += g[..., None] * np.array(color, np.float32) * 0.20
+    g2 = np.clip(1 - np.sqrt(((X - 540) / 700) ** 2 + ((Y - 120) / 380) ** 2), 0, 1) ** 2
+    base += g2[..., None] * np.array(color, np.float32) * 0.12
+    img = Image.fromarray(np.clip(base, 0, 255).astype(np.uint8))
+    dr = ImageDraw.Draw(img)
+    for y in range(40, h, 64):
+        for x in range(40, w, 64):
+            dr.ellipse((x - 1.5, y - 1.5, x + 1.5, y + 1.5), fill=cl.dot)
+    return img
+
+
+def title_layer(sc, idx, total, st):
+    tt = st.title
+    w = st.video.w
+    col = sc["color"]
+    L = Image.new("RGBA", (w, tt.h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(L)
+    x0 = w / 2 - (total - 1) * tt.dot_step / 2
+    for i in range(total):
+        x = x0 + i * tt.dot_step
+        if i == idx:
+            d.ellipse([x - 15, tt.dot_y[0], x + 15, tt.dot_y[1]], fill=col)
+        elif i < idx:
+            d.ellipse([x - 10, tt.dot_y[0] + 5, x + 10, tt.dot_y[1] - 5], fill=(*col, 130))
+        else:
+            d.ellipse([x - 10, tt.dot_y[0] + 5, x + 10, tt.dot_y[1] - 5], fill=(*tt.color_dot_dim, 255))
+    size = tt.fs_title
+    while font(XB, size).getlength(sc["title"]) > tt.max_w:
+        size -= 4
+    d.text((w / 2, tt.title_y), sc["title"], font=font(XB, size), fill=(255, 255, 255), anchor="ms")
+    d.text((w / 2, tt.tag_y), sc["tag"], font=font(SB, tt.fs_tag), fill=tt.color_tag, anchor="ms")
+    return L
+
+
+class Renderer:
+    def __init__(s, scenes, st):
+        s.st = st
+        s.scenes = scenes
+        s.bgs = {}
+        s.titles = []
+        for i, sc in enumerate(scenes):
+            caption.layout(sc, st)
+            if sc["color"] not in s.bgs:
+                s.bgs[sc["color"]] = make_bg(sc["color"], st)
+            s.titles.append(title_layer(sc, i, len(scenes), st))
+        s.stages = [None] * len(scenes)
+        stg = getattr(st, "stage", None)
+        s.stage_k = st.video.w / 540.0 * float(getattr(stg, "scale", 1.0))
+
+    def at(s, t):
+        for i, sc in enumerate(s.scenes):
+            if t < sc["end"]:
+                return i
+        return len(s.scenes) - 1
+
+    def _stage(s, si):
+        if s.stages[si] is None:
+            sc = s.scenes[si]
+            spec = sc.get("ill_params", {})
+            prev = None
+            if spec.get("continue") and si > 0 and s.scenes[si - 1]["ill"] == "stage":
+                prev = s._stage(si - 1)
+            s.stages[si] = Stage(spec, sc, prev, s.stage_k)
+        return s.stages[si]
+
+    def frame(s, t):
+        st = s.st
+        si = s.at(t)
+        sc = s.scenes[si]
+        lt = t - sc["start"]
+        if sc["ill"] == "stage":
+            im = s._stage(si).render(min(lt, sc["end"] - sc["start"])).convert("RGB")
+            if im.size != (st.video.w, st.video.h):
+                im = im.resize((st.video.w, st.video.h), Image.LANCZOS)
+            caption.draw(im, sc, t, st)
+            return im
+        fr = s.bgs[sc["color"]].copy()
+        e = ease_out(lt / 0.45)
+        L = s.titles[si]
+        if e < 1:
+            L = L.copy()
+            L.putalpha(L.getchannel("A").point(lambda v, e=e: int(v * e)))
+        fr.paste(L, (0, st.title.top + int((1 - e) * 45)), L)
+        cv = Cv(st, s.scenes)
+        find(sc["ill"])["fn"](cv, lt, sc["color"], sc.get("ill_params", {}))
+        im = cv.out()
+        e2 = ease_out((lt - 0.1) / 0.5)
+        if e2 < 1:
+            im.putalpha(im.getchannel("A").point(lambda v, e2=e2: int(v * e2)))
+        fr.paste(im, ((st.video.w - cv.ow) // 2, st.ill.top), im)
+        caption.draw(fr, sc, t, st)
+        return fr

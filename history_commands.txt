@@ -1,0 +1,42 @@
+SERIES_NAME = neuronets_brief
+
+python -m vg prompt plan neuronets_brief --out series/neuronets_brief/plan_prompt.md
+
+python -m vg prompt scenes neuronets_brief 10 --out series/neuronets_brief/prompts/10.md
+
+python -m stage.newobj series/neuronets_brief/scenes/10.json --out prompts_out
+
+Для всех MISSING , проверка ошибок генерации и создание preview:
+$MISSING_NAME = "loss_meter"; python -m stage.gate "stage/objects/$MISSING_NAME.py" --add --preview "stage/objects_preview/$MISSING_NAME.png"
+
+$SERIES_NAME = "neuronets_brief"; python -m vg check neuronets_brief 10
+
+
+
+python -m stage.gate stage/objects/input_vector.py --preview p.png --add
+
+                                                                                                                        
+44 $SERIES_NAME = "neuronets_brief"; python -m vg check $SERIES_NAME 10                                                                                                                                                                                                  
+45 python -m vg check neuronets_brief 10                                                                                                                                                                                                                                 
+
+46 python -m stage.newobj series/neuronets_brief/scenes/10.json --out prompts_out
+
+47 python -m stage.gate stage/objects/activation_curve.py --preview stage/objects_preview/activation_curve.png --add
+48 python -m stage.gate stage/objects/input_vector.py --preview stage/objects_preview/input_vector.png --add
+51 python -m stage.gate stage/objects/prediction_card.py --preview stage/objects_preview/prediction_card.png --add
+52 python -m stage.gate stage/objects/sum_node.py --preview stage/objects_preview/sum_node.png --add
+53 python -m stage.gate stage/objects/weight_box.py --preview stage/objects_preview/weight_box.png --add
+  
+python -m stage.gate stage/objects/input_vector.py --preview p.png --add
+
+
+54 $SERIES_NAME = "neuronets_brief"; python -m vg check  $SERIES_NAME 10                                                                                                                                                                                                 
+Ответ на 54 :
+10: ОШИБКИ
+  ошибка: сцена 5 (prediction): stage: objects[0]: параметр value=0 вне допустимого
+  ошибка: сцена 5 (prediction): stage: связь lnk4: from='act.bottom' не указывает на точку объекта
+  внимание: сцена 1 (signal_start): в text 14 слов, рекомендуется от 15
+  внимание: сцена 2 (weights_mult): в text 12 слов, рекомендуется от 15 
+
+
+  python -m vg check neuronets_brief 10

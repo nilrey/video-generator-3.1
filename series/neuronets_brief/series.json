@@ -1,0 +1,12 @@
+{
+  "lang": "ru",
+  "style": "default",
+  "engine": "silero",
+  "voice": "eugene",
+  "rate": 1.0,
+  "count": 30,
+  "max_dur": 60,
+  "brief": "Нейросети за минуту",
+  "limits": {},
+  "mode": "stage"
+}

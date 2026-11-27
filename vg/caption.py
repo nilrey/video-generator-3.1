@@ -1,0 +1,94 @@
+"""Субтитры: раскладка слов по строкам и отрисовка с подсветкой текущего слова."""
+from PIL import ImageDraw
+
+from vg.fonts import font
+from vg.gfx import XB
+
+
+def layout(sc, st):
+    """Раскладка слов сцены на куски по 1-2 строки; для сцен stage ниже (cap.base_y_stage)."""
+    c = st.cap
+    F = font(XB, c.font_size)
+    words = sc["words"]
+    by = c.base_y
+    if sc.get("ill") == "stage":
+        by = getattr(c, "base_y_stage", round(st.video.h * 0.885))
+    w_ = st.video.w
+
+    def nlines(idxs):
+        lines = [[]]
+        for i in idxs:
+            trial = " ".join(words[j]["text"] for j in lines[-1] + [i])
+            if lines[-1] and F.getlength(trial) + c.word_gap * len(lines[-1]) > c.max_w:
+                lines.append([i])
+            else:
+                lines[-1].append(i)
+        return lines
+
+    chunks, cur = [], []
+    for i, w in enumerate(words):
+        test = cur + [i]
+        if cur and (len(nlines(test)) > 2 or len(test) > 5):
+            chunks.append(cur)
+            cur = [i]
+        else:
+            cur = test
+        if w["text"][-1] in ".,!?:;":
+            chunks.append(cur)
+            cur = []
+    if cur:
+        chunks.append(cur)
+
+    out = []
+    for ci, idxs in enumerate(chunks):
+        lines = nlines(idxs)
+        n = len(lines)
+        items = []
+        for li, line in enumerate(lines):
+            base = by + (li - (n - 1) / 2) * c.line_h
+            lw = F.getlength(" ".join(words[j]["text"] for j in line)) + c.word_gap * (len(line) - 1)
+            x0 = (w_ - lw) / 2
+            for k, j in enumerate(line):
+                prefix = " ".join(words[m]["text"] for m in line[:k]) + (" " if k else "")
+                items.append((j, words[j]["text"], x0 + F.getlength(prefix) + c.word_gap * k, base))
+        t0 = sc["start"] if ci == 0 else words[idxs[0]]["start"]
+        out.append(dict(idxs=idxs, items=items, t0=t0))
+    for ci in range(len(out)):
+        out[ci]["t1"] = out[ci + 1]["t0"] if ci + 1 < len(out) else sc["end"]
+    sc["chunks"] = out
+
+
+def draw(fr, sc, t, st):
+    """Нарисовать субтитры сцены sc на кадре fr в момент t."""
+    c = st.cap
+    F = font(XB, c.font_size)
+    ch = sc["chunks"][-1]
+    for x in sc["chunks"]:
+        if x["t0"] <= t < x["t1"]:
+            ch = x
+            break
+    d = ImageDraw.Draw(fr)
+    col = sc["color"]
+    items = ch["items"]
+    if c.highlight:
+        cur = ch["idxs"][0]
+        for j in ch["idxs"]:
+            if sc["words"][j]["start"] <= t:
+                cur = j
+        for j, txt, x, b in items:
+            if j == cur:
+                d.rounded_rectangle([x - 14, b - 66, x + F.getlength(txt) + 14, b + 22], radius=18, fill=col)
+        for j, txt, x, b in items:
+            if j == cur:
+                d.text((x, b), txt, font=F, fill=c.color_bg, anchor="ls")
+            else:
+                d.text((x, b), txt, font=F, fill=c.color_text, anchor="ls",
+                       stroke_width=c.stroke_w, stroke_fill=c.stroke_fill)
+    else:
+        xs0 = min(x for _, _, x, _ in items)
+        xs1 = max(x + F.getlength(txt) for _, txt, x, _ in items)
+        ys0 = min(b for _, _, _, b in items) - 66
+        ys1 = max(b for _, _, _, b in items) + 22
+        d.rounded_rectangle([xs0 - 18, ys0, xs1 + 18, ys1], radius=20, fill=col)
+        for _, txt, x, b in items:
+            d.text((x, b), txt, font=F, fill=c.color_bg, anchor="ls")

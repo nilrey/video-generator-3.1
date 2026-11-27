@@ -1,0 +1,6 @@
+numpy
+pillow
+torch
+torchaudio
+omegaconf
+scipy

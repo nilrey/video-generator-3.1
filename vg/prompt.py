@@ -1,0 +1,67 @@
+"""Сборка промптов для внешней LLM: план серии и сцены (обычный режим и mode=stage)."""
+import json
+
+from vg import rules
+from vg.ills import REG, names
+from vg.paths import PROMPTS
+from vg.check import limits_of, prompt_vars
+from stage import manifest_text
+
+
+HIDDEN = {"stage"}  # служебные иллюстрации, не предлагаются в обычных промптах
+
+
+def visible():
+    """Имена иллюстраций, видимых LLM (без служебных, например stage)."""
+    return [n for n in names() if n not in HIDDEN]
+
+
+def table():
+    """Markdown-таблица иллюстраций для вставки в промпт."""
+    rows = ["| ill | Когда использовать |", "|---|---|"]
+    rows += [f"| {n} | {REG[n]['hint']} |" for n in visible()]
+    return "\n".join(rows)
+
+
+def fill(text, extra=None):
+    """Подставить переменные {{NAME}} в шаблон промпта."""
+    m = {
+        "TITLE_MAX": rules.TITLE_MAX, "TAG_MAX": rules.TAG_MAX,
+        "WORDS_MIN": rules.WORDS[0], "WORDS_MAX": rules.WORDS[1],
+        "SCENES_MIN": rules.SCENES[0], "SCENES_MAX": rules.SCENES[1],
+        "MID_MIN": rules.SCENES[0] - 2, "MID_MAX": rules.SCENES[1] - 2,
+        "N_ILLS": len(visible()), "ILLS": table(),
+    }
+    m.update(extra or {})
+    for k, v in m.items():
+        text = text.replace("{{" + k + "}}", str(v))
+    return text
+
+
+def plan_prompt(s):
+    """Промпт плана серии."""
+    t = (PROMPTS / "plan.md").read_text(encoding="utf-8")
+    return fill(t, {"BRIEF": s.cfg["brief"] or "(не задано)", "COUNT": s.cfg["count"], "LANG": s.cfg["lang"]})
+
+
+def scenes_prompt(s, vid):
+    """Промпт сцен одного ролика; при series.json mode=stage берется stage_scenes.md с манифестом объектов."""
+    plan = s.plan()
+    if plan is None:
+        raise FileNotFoundError(f"нет {s.plan_path}: сначала сохраните план серии")
+    vids = plan["videos"]
+    me = next((v for v in vids if v["id"] == vid), None)
+    if me is None:
+        raise KeyError(f"в плане нет ролика {vid}")
+    others = "\n".join(f"- {v['id']}: {v['title']}" for v in vids)
+    task = (f"\n\n## Задача\n\nСерия: {s.name}. Язык: {s.cfg['lang']}.\n"
+            f"Ролик {vid} из {len(vids)}.\n\n"
+            f"Описание этого ролика:\n\n{json.dumps(me, ensure_ascii=False, indent=2)}\n\n"
+            f"Все ролики серии (для связок и ссылок вперед):\n{others}\n\n"
+            f"Выведи только JSON.\n")
+    stage_mode = s.cfg.get("mode") == "stage"
+    t = (PROMPTS / ("stage_scenes.md" if stage_mode else "scenes.md")).read_text(encoding="utf-8")
+    extra = prompt_vars(limits_of(s.cfg))
+    if stage_mode:
+        extra["MANIFEST"] = manifest_text()
+    return fill(t, extra) + task
